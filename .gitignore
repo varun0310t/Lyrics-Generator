@@ -2,4 +2,6 @@
 *.wav
 /separated_audio
 /pretrained_models
-venv
+venv/
+*.srt
+/uploads
