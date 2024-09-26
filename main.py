@@ -1,4 +1,4 @@
-from flask import Flask, request, send_file, jsonify
+from flask import Flask, request, send_file, jsonify, Response
 from datetime import timedelta
 import torch
 import whisper
@@ -12,6 +12,15 @@ app = Flask(__name__)
 # Enable TensorFlow logging to see device placement
 tf.debugging.set_log_device_placement(True)
 
+# Map accuracy levels to Whisper model sizes
+accuracy_models = {
+    '0': 'tiny',
+    '1': 'base',
+    '2': 'small',
+    '3': 'medium',
+    '4': 'large'
+}
+
 def separate_audio(input_audio_path, output_dir="separated_audio"):
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
@@ -22,7 +31,7 @@ def separate_audio(input_audio_path, output_dir="separated_audio"):
     del separator
     return os.path.join(output_dir, os.path.splitext(os.path.basename(input_audio_path))[0], 'vocals.wav')
 
-def transcribe_to_srt(audio_path, model_size="large", srt_filename="output.srt"):
+def transcribe_to_srt(audio_path, model_size="base", srt_filename="output.srt"):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = whisper.load_model(model_size, device=device)
     result = model.transcribe(audio_path)
@@ -42,13 +51,16 @@ def process():
     if not query:
         return jsonify({"error": "No query provided"}), 400
 
+    accuracy = request.form.get('accuracy', '1')  # Default to '1' (base model) if not provided
+    model_size = accuracy_models.get(accuracy, 'base')
+
     input_audio_path = os.path.join("uploads", file.filename)
     file.save(input_audio_path)
 
     response_files = []
 
     if 'subtitles' in query:
-        srt_path = transcribe_to_srt(input_audio_path)
+        srt_path = transcribe_to_srt(input_audio_path, model_size=model_size)
         response_files.append(srt_path)
 
     if 'vocals' in query or 'background' in query:
@@ -59,7 +71,13 @@ def process():
             background_path = vocals_path.replace('vocals.wav', 'accompaniment.wav')
             response_files.append(background_path)
 
-    return jsonify({"files": response_files})
+    # Send files individually
+    def generate():
+        for file_path in response_files:
+            yield from open(file_path, 'rb')
+            yield b'\n--fileboundary\n'
+
+    return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=fileboundary')
 
 if __name__ == '__main__':
     if not os.path.exists("uploads"):
